@@ -5,13 +5,20 @@ import os
 import pathlib
 import sys
 import signal
-
 import argparse
-
+import funcy
+import aiofiles
+import clint
+import progress
 from quick_download import quick_download
 
 DISPLAY_PROGRESS: bool = True
 DISPLAY_STARTUP: bool = True
+import pyximport
+
+pyximport.install(pyimport=True, language_level=3)
+
+import file_size
 
 
 async def display_startup():
@@ -59,50 +66,52 @@ async def parse_args():
     return args
 
 
-async def main(args=None):
+async def main(**kwargs):
     if DISPLAY_STARTUP:
         await display_startup()
-    if args is None:
+    if kwargs is None:
         args = await parse_args()
-    if args.command == 'tasks':
+        kwargs = {
+            "command": args.command,
+            "link": args.link,
+            "connections": args.connections,
+            "skip_tls": args.skip_tls,
+            "output": args.output
+        }
+    else:
+        if "connections" not in kwargs.keys():
+            kwargs["connections"] = 32
+        if "skip_tls" not in kwargs.keys():
+            kwargs["skip_tls"] = False
+    if kwargs["command"] == 'tasks':
         # TODO: Tasks
         pass
-    elif args.command == 'resume':
+    elif kwargs["command"] == 'resume':
         # TODO: Resume
         pass
-    elif args.command == 'download':
-        content = await quick_download(args.link, args.connections, args.skip_tls)
+    elif kwargs["command"] == 'download':
+        content: bytes = await quick_download(kwargs["link"], kwargs["connections"], kwargs["skip_tls"])
+        print(f"content_length: {len(content)}")
+        content_length_in_unit, unit = file_size.get_largest_unit(len(content))
+        print(f"content_length: {content_length_in_unit}")
         # TODO: Write content to output file at args.output
-        print(content)
-        pass
+        async with aiofiles.open(kwargs["output"], "wb") as file:
+            with progress.Bar("Writing downloaded files to output.", unit=unit,
+                              expected_size=content_length_in_unit) as bar:
+                for chunk in funcy.chunks(1024**file_size.SizeUnit.__get_unit__(unit), content):
+                    await file.write(chunk)
+                    bar.show(bar.last_progress + 1)
 
 
-def start():
+def start(**kwargs):
     loop = asyncio.get_event_loop()
     # May want to catch other signals too
-    signals = (signal.SIGHUP, signal.SIGTERM, signal.SIGINT)
-    for s in signals:
-        loop.add_signal_handler(
-            s, lambda sig: asyncio.create_task(shutdown(sig, loop)))
     try:
-        loop.run_until_complete(main())
+        loop.run_until_complete(main(**kwargs))
     finally:
         loop.close()
         logging.info("Successfully shutdown the Mayhem service.")
 
 
-async def shutdown(sig: signal.Signals, loop):
-    """Cleanup tasks tied to the service's shutdown."""
-    logging.info(f"Received exit signal {sig.name}...")
-    tasks = [t for t in asyncio.all_tasks() if t is not
-             asyncio.current_task()]
-    [task.cancel() for task in tasks]
-
-    logging.info(f"Cancelling {len(tasks)} outstanding tasks")
-    await asyncio.gather(*tasks)
-    logging.info(f"Flushing metrics")
-    loop.stop()
-
-
 if __name__ == '__main__':
-    start()
+    start(command="download", link="a", output="b.rar")
